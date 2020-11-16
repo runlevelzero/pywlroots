@@ -929,18 +929,155 @@ CDEF += """
 #define WLR_VERSION_MICRO ...
 """
 
+# wlr_layer_shell_v1.h
+CDEF += """
+struct wlr_layer_shell_v1 {
+	struct wl_global *global;
+
+	struct wl_listener display_destroy;
+
+	struct {
+		// struct wlr_layer_surface_v1 *
+		// Note: the output may be NULL. In this case, it is your
+		// responsibility to assign an output before returning.
+		struct wl_signal new_surface;
+		struct wl_signal destroy;
+	} events;
+
+	void *data;
+};
+
+struct wlr_layer_surface_v1_state {
+	uint32_t anchor;
+	int32_t exclusive_zone;
+	struct {
+		uint32_t top, right, bottom, left;
+	} margin;
+	bool keyboard_interactive;
+	uint32_t desired_width, desired_height;
+	uint32_t actual_width, actual_height;
+	enum zwlr_layer_shell_v1_layer layer;
+};
+
+struct wlr_layer_surface_v1_configure {
+	struct wl_list link; // wlr_layer_surface_v1::configure_list
+	uint32_t serial;
+	struct wlr_layer_surface_v1_state state;
+};
+
+struct wlr_layer_surface_v1 {
+	struct wlr_surface *surface;
+	struct wlr_output *output;
+	struct wl_resource *resource;
+	struct wlr_layer_shell_v1 *shell;
+	struct wl_list popups; // wlr_xdg_popup::link
+
+	char *namespace;
+
+	bool added, configured, mapped, closed;
+	uint32_t configure_serial;
+	uint32_t configure_next_serial;
+	struct wl_list configure_list;
+
+	struct wlr_layer_surface_v1_configure *acked_configure;
+
+	struct wlr_layer_surface_v1_state client_pending;
+	struct wlr_layer_surface_v1_state server_pending;
+	struct wlr_layer_surface_v1_state current;
+
+	struct wl_listener surface_destroy;
+
+	struct {
+		/**
+		 * The destroy signal indicates that the wlr_layer_surface is about to be
+		 * freed. It is guaranteed that the unmap signal is raised before the destroy
+		 * signal if the layer surface is destroyed while mapped.
+		 */
+		struct wl_signal destroy;
+		/**
+		 * The map signal indicates that the client has configured itself and is
+		 * ready to be rendered by the compositor.
+		 */
+		struct wl_signal map;
+		/**
+		 * The unmap signal indicates that the surface is no longer in a state where
+		 * it should be rendered by the compositor. This might happen if the surface
+		 * no longer has a displayable buffer because either the surface has been
+		 * hidden or is about to be destroyed. It is guaranteed that the unmap signal
+		 * is raised before the destroy signal if the layer surface is destroyed
+		 * while mapped.
+		 */
+		struct wl_signal unmap;
+		/**
+		 * The new_popup signal is raised when a new popup is created. The data
+		 * parameter passed to the listener is a pointer to the new wlr_xdg_popup.
+		 */
+		struct wl_signal new_popup;
+	} events;
+
+	void *data;
+};
+
+struct wlr_layer_shell_v1 *wlr_layer_shell_v1_create(struct wl_display *display);
+
+/**
+ * Notifies the layer surface to configure itself with this width/height. The
+ * layer_surface will signal its map event when the surface is ready to assume
+ * this size.
+ */
+void wlr_layer_surface_v1_configure(struct wlr_layer_surface_v1 *surface,
+		uint32_t width, uint32_t height);
+
+/**
+ * Unmaps this layer surface and notifies the client that it has been closed.
+ */
+void wlr_layer_surface_v1_close(struct wlr_layer_surface_v1 *surface);
+
+bool wlr_surface_is_layer_surface(struct wlr_surface *surface);
+
+struct wlr_layer_surface_v1 *wlr_layer_surface_v1_from_wlr_surface(
+		struct wlr_surface *surface);
+
+/* Calls the iterator function for each sub-surface and popup of this surface */
+void wlr_layer_surface_v1_for_each_surface(struct wlr_layer_surface_v1 *surface,
+		wlr_surface_iterator_func_t iterator, void *user_data);
+
+/* Calls the iterator function for each popup of this surface */
+void wlr_layer_surface_v1_for_each_popup(struct wlr_layer_surface_v1 *surface,
+		wlr_surface_iterator_func_t iterator, void *user_data);
+
+/**
+ * Find a surface within this layer-surface tree at the given surface-local
+ * coordinates. Returns the surface and coordinates in the leaf surface
+ * coordinate system or NULL if no surface is found at that location.
+ */
+struct wlr_surface *wlr_layer_surface_v1_surface_at(
+		struct wlr_layer_surface_v1 *surface, double sx, double sy,
+		double *sub_x, double *sub_y);
+
+"""
+
 SOURCE = """
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <wayland-server-core.h>
+#include "wlr-layer-shell-unstable-v1-protocol.h"
+
 #include <wlr/backend.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_box.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_matrix.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_surface.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
@@ -949,6 +1086,8 @@ SOURCE = """
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <xkbcommon/xkbcommon-compose.h>
+
+
 
 struct wl_listener_container {
     void *handle;
@@ -996,4 +1135,4 @@ ffi_builder.include(xkb_ffi)
 ffi_builder.cdef(CDEF)
 
 if __name__ == "__main__":
-    ffi_builder.compile()
+    ffi_builder.compile(verbose=True)
