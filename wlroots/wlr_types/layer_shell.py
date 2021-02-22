@@ -39,7 +39,7 @@ class LayerSurface:
 
         """
         self._ptr = ffi.cast("struct wlr_layer_surface_v1 *", ptr)
-
+        # lib.wlr_layer_surface_configure(self._ptr,40,40)
         self.map_event = Signal(ptr=ffi.addressof(self._ptr.events.map))
         self.unmap_event = Signal(ptr=ffi.addressof(self._ptr.events.unmap))
         self.destroy_event = Signal(ptr=ffi.addressof(self._ptr.events.destroy))
